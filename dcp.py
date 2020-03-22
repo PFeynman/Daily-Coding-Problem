@@ -1,17 +1,18 @@
 import pickle
 import os.path
+import base64
+import re
+
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-import base64
 import email
-import re
 
 # The creation of the service has been copied from https://developers.google.com/gmail/api/quickstart/python
 
 # If modifying these scopes, delete the file token.pickle.
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
 def create_service():
   creds = None
@@ -50,17 +51,37 @@ def get_label_id(service):
   
   return label_id
 
-def get_problem_number(msg_string):
-  pattern = 'Problem #[0-9]+'
-  return re.search(pattern, msg_string).group(0).replace('Problem #', '')
+def get_next_problem(service, label_id):
+  subject_pattern = 'Daily Coding Problem: Problem #([0-9]+)'
 
-def extract_statement(msg_string):
+  results = service.users().messages().list(userId='me', labelIds=[label_id], q="is:unread").execute()
+  while 'nextPageToken' in results:
+    results = service.users().messages().list(userId='me', labelIds=[label_id], pageToken=results['nextPageToken'], q="is:unread").execute()
+
+  msg_index = -1
+  message = service.users().messages().get(userId='me', id=results['messages'][msg_index]['id']).execute()
+  match = re.match(subject_pattern, message['payload']['headers'][16]['value'])
+  while match is None:
+    mark_email_as_read(service, message['id'])
+    msg_index -= 1
+    message = service.users().messages().get(userId='me', id=results['messages'][msg_index]['id']).execute()
+    match = re.match(subject_pattern, message['payload']['headers'][16]['value'])
+  
+  return message, match.group(1)
+
+def mark_email_as_read(service, message_id):
+  service.users().messages().modify(userId='me', id=message_id, body={'removeLabelIds': ['UNREAD'], 'addLabelIds': []}).execute()
+
+def extract_statement(message):
   begining_string = 'Good morning! Here\'s your coding interview problem for today.\r\n\r\n'
   ending_string = '--------------------------------------------------------------------------------'
+  
+  msg_bytes = base64.urlsafe_b64decode(message['payload']['parts'][0]['body']['data'].encode('ASCII'))
+  msg_string = msg_bytes.decode('ASCII')
 
   statement = msg_string.partition(begining_string)[2]
   statement = statement.split(ending_string)[0]
-  statement = statement.replace('=3D', '=')
+  statement = statement.replace('\r\n\r\n\r\n\r\n', '')
 
   return statement
 
@@ -72,39 +93,32 @@ def create_directory(problem_number, statement):
   except OSError:
     print ("Creation of the directory %s failed" % path)
   else:
-    readme = open(f'{path}/README.md', 'w', newline='')
-    readme.write(f'# {path}')
-    readme.write('\r\n\r\n')
-    readme.write(statement)
-    readme.close()
+    with open(f'{path}/README.md', 'w', newline='') as readme:
+      readme.write(f'# {path}')
+      readme.write('\r\n\r\n')
+      readme.write(statement)
+      readme.close()
 
-    problem_file = open(f'{path}/problem_{problem_number}.py', 'w')
-    problem_file.close()
+    with open(f'{path}/problem_{problem_number}.py', 'w') as problem_file:
+      problem_file.close()
 
-    tests_file = open(f'{path}/test_problem_{problem_number}.py', 'w')
-    tests_file.write('import unittest\r\n')
-    tests_file.write(f'class TestsProblem{problem_number}(unittest.TestCase):')
-    tests_file.close()
+    with open(f'{path}/test_problem_{problem_number}.py', 'w') as tests_file:
+      tests_file.write('import unittest\r\n')
+      tests_file.write(f'class TestsProblem{problem_number}(unittest.TestCase):')
+      tests_file.close()
 
 def main():
-    
     service = create_service()
 
     label_id = get_label_id(service)
 
-    results = service.users().messages().list(userId='me', labelIds=[label_id], q="is:unread").execute()
-    while 'nextPageToken' in results:
-      results = service.users().messages().list(userId='me', labelIds=[label_id], pageToken=results['nextPageToken'], q="is:unread").execute()
+    message, problem_number = get_next_problem(service, label_id)
 
-    message = service.users().messages().get(userId='me', id=results['messages'][-1]['id'], format='raw').execute()
+    problem_statement = extract_statement(message)
     
-    msg_bytes = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
-    msg_string = msg_bytes.decode('ASCII')
-    msg_string = msg_string.replace('=\r\n', '')
-
-    problem_number = get_problem_number(msg_string)
-    problem_statement = extract_statement(msg_string)
     create_directory(problem_number, problem_statement)
+    
+    mark_email_as_read(service, message['id'])
 
 if __name__ == '__main__':
     main()
