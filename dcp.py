@@ -3,11 +3,10 @@ import os.path
 import base64
 import re
 
+from git import Repo
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-
-import email
 
 # The creation of the service has been copied from https://developers.google.com/gmail/api/quickstart/python
 
@@ -108,17 +107,21 @@ def create_directory(problem_number, statement):
       tests_file.close()
 
 def main():
-    service = create_service()
+  service = create_service()
 
-    label_id = get_label_id(service)
+  label_id = get_label_id(service)
 
-    message, problem_number = get_next_problem(service, label_id)
+  message, problem_number = get_next_problem(service, label_id)
 
-    problem_statement = extract_statement(message)
-    
-    create_directory(problem_number, problem_statement)
-    
-    mark_email_as_read(service, message['id'])
+  problem_statement = extract_statement(message)
+  
+  create_directory(problem_number, problem_statement)
+  
+  mark_email_as_read(service, message['id'])
+
+  repo = Repo('.')
+  repo.index.add(repo.untracked_files)
+  repo.index.commit(f'Added directory of problem {problem_number}.')
 
 if __name__ == '__main__':
     main()
